@@ -1,30 +1,34 @@
-import os
 import datetime
-import jwt
+import os
+
+# import traceback
+from pathlib import Path
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from dotenv import load_dotenv
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
+import jwt
 from pwdlib import PasswordHash
 from pwdlib.hashers.bcrypt import BcryptHasher
-from dotenv import load_dotenv
-from pathlib import Path
-from email.mime.multipart import MIMEMultipart
-import smtplib
-from email.mime.text import MIMEText
+from email_template import generar_html_recuperacion
 
+# Cargar archivo .env PRIMERO
+env_path = Path(__file__).resolve().parent / ".env"
+load_dotenv(dotenv_path=env_path)
+
+# Asignar variables de entorno
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
 SMTP_EMAIL = os.getenv("SMTP_EMAIL")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
-
-env_path = Path(__file__).resolve().parent / ".env"
-load_dotenv(dotenv_path=env_path)
 
 SECRET_KEY = os.getenv("SECRET_KEY", "secret_fallback")
 ALGORITHM = "HS256"
 
 password_hash = PasswordHash((BcryptHasher(),))
 
-# Indica a Swagger que el token se obtiene en la ruta /login
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 
@@ -80,9 +84,6 @@ def requerir_roles(roles_permitidos: list[str]):
     return verificador
 
 
-# crear_token_recuperacion
-
-
 def crear_token_recuperacion(email: str) -> str:
     payload = {
         "sub": email,
@@ -109,36 +110,32 @@ def verificar_token_recuperacion(token: str) -> str:
         raise HTTPException(status_code=400, detail="Token inválido")
 
 
-def enviar_correo_recuperacion(email_destino: str, token: str):
-    # Enlace hacia tu front-end o formulario donde el usuario ingresa la nueva clave
-    enlace_recuperacion = f"http://localhost:8000/docs#/default/restablecer_password_reset_password_post?token={token}"
+def enviar_correo_recuperacion(email_destino: str, usuario: str, token: str):
+    if not SMTP_EMAIL or not SMTP_PASSWORD:
+        print("❌ Error: Credenciales SMTP no configuradas")
+        return
 
-    mensaje = MIMEMultipart()
-    mensaje["From"] = SMTP_EMAIL
+    mensaje = MIMEMultipart("alternative")
+
+    # Nombre visible para el filtro Antispam
+    mensaje["From"] = f"Sistema de Autenticación <{SMTP_EMAIL}>"
     mensaje["To"] = email_destino
-    mensaje["Subject"] = "Recuperación de Contraseña"
+    mensaje["Subject"] = "Recuperación de contraseña"
 
-    cuerpo = f"""
-    Hola,
+    # Versión en Texto Plano (fundamental para reputación antispam)
+    texto_plano = f"Hola {usuario},\n\nTu token de recuperación es:\n{token}\n\nCaduca en 15 minutos."
+    mensaje.attach(MIMEText(texto_plano, "plain", "utf-8"))
 
-    Has solicitado restablecer tu contraseña. Haz clic o copia el siguiente token para realizar el cambio:
-
-    Token de recuperación:
-    {token}
-
-    Este enlace caducará en 15 minutos.
-
-    Si no solicitaste este cambio, puedes ignorar este correo.
-    """
-
-    mensaje.attach(MIMEText(cuerpo, "plain"))
+    #  Versión en HTML
+    html_contenido = generar_html_recuperacion(usuario=usuario, token=token)
+    mensaje.attach(MIMEText(html_contenido, "html", "utf-8"))
 
     try:
         server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()  # Conexión segura TLS
+        server.starttls()
         server.login(SMTP_EMAIL, SMTP_PASSWORD)
-        server.send_message(mensaje)
+        server.sendmail(SMTP_EMAIL, email_destino, mensaje.as_string())
         server.quit()
-        print(f"Correo de recuperación enviado con éxito a {email_destino}")
+        print(f"✅ Correo enviado correctamente a: {email_destino}")
     except Exception as e:
-        print(f"Error al enviar el correo: {e}")
+        print(f"❌ Error al enviar el correo: {e}")
